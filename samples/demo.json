@@ -1,0 +1,93 @@
+{
+  "description": "Local demo corpus: article A-100 crosses from page-001 to page-002.",
+  "pages": [
+    {
+      "page_id": "page-001",
+      "image_url": "/scans/page-001.svg",
+      "width": 1600,
+      "height": 2200,
+      "blocks": [
+        {
+          "block_no": 1,
+          "words": [
+            {"text": "HARBOR", "bbox": [100, 120, 215, 155]},
+            {"text": "GAZETTE", "bbox": [225, 120, 355, 155]},
+            {"text": "ARCHIVE", "bbox": [365, 120, 495, 155]},
+            {"text": "BULLETIN", "bbox": [505, 120, 645, 155]}
+          ]
+        },
+        {
+          "block_no": 2,
+          "words": [
+            {"text": "The", "bbox": [100, 300, 165, 335]},
+            {"text": "lighthouse", "bbox": [175, 300, 315, 335]},
+            {"text": "keeper", "bbox": [325, 300, 430, 335]}
+          ]
+        },
+        {
+          "block_no": 3,
+          "words": [
+            {"text": "Weather", "bbox": [100, 480, 225, 515]},
+            {"text": "noted", "bbox": [235, 480, 325, 515]},
+            {"text": "a", "bbox": [335, 480, 360, 515]},
+            {"text": "calm", "bbox": [370, 480, 435, 515]},
+            {"text": "sea", "bbox": [445, 480, 505, 515]}
+          ]
+        }
+      ]
+    },
+    {
+      "page_id": "page-002",
+      "image_url": "/scans/page-002.svg",
+      "width": 1600,
+      "height": 2200,
+      "blocks": [
+        {
+          "block_no": 1,
+          "words": [
+            {"text": "climbed", "bbox": [100, 140, 240, 175]},
+            {"text": "the", "bbox": [250, 140, 315, 175]},
+            {"text": "tower", "bbox": [325, 140, 425, 175]},
+            {"text": "before", "bbox": [435, 140, 540, 175]},
+            {"text": "dawn", "bbox": [550, 140, 630, 175]}
+          ]
+        },
+        {
+          "block_no": 2,
+          "words": [
+            {"text": "only", "bbox": [100, 300, 175, 335]},
+            {"text": "in", "bbox": [185, 300, 220, 335]},
+            {"text": "the", "bbox": [230, 300, 295, 335]},
+            {"text": "archive", "bbox": [305, 300, 425, 335]},
+            {"text": "edition", "bbox": [435, 300, 555, 335]}
+          ]
+        }
+      ]
+    }
+  ],
+  "articles": [
+    {
+      "article_id": "A-100",
+      "title": "The Lighthouse Keeper",
+      "blocks": [
+        {"page_id": "page-001", "block_no": 1},
+        {"page_id": "page-001", "block_no": 2},
+        {"page_id": "page-002", "block_no": 1}
+      ]
+    },
+    {
+      "article_id": "A-200",
+      "title": "Archive Index",
+      "blocks": [
+        {"page_id": "page-002", "block_no": 2}
+      ]
+    },
+    {
+      "article_id": "A-300",
+      "title": "Weather Note",
+      "blocks": [
+        {"page_id": "page-001", "block_no": 3}
+      ]
+    }
+  ]
+}

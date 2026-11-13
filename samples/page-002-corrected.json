@@ -1,0 +1,28 @@
+{
+  "description": "Use this body with PUT /api/pages/page-002/ocr in Swagger.",
+  "image_url": "/scans/page-002.svg",
+  "width": 1600,
+  "height": 2200,
+  "blocks": [
+    {
+      "block_no": 1,
+      "words": [
+        {"text": "walked", "bbox": [100, 140, 220, 175]},
+        {"text": "the", "bbox": [230, 140, 295, 175]},
+        {"text": "tower", "bbox": [305, 140, 405, 175]},
+        {"text": "before", "bbox": [415, 140, 520, 175]},
+        {"text": "dawn", "bbox": [530, 140, 610, 175]}
+      ]
+    },
+    {
+      "block_no": 2,
+      "words": [
+        {"text": "only", "bbox": [100, 300, 175, 335]},
+        {"text": "in", "bbox": [185, 300, 220, 335]},
+        {"text": "the", "bbox": [230, 300, 295, 335]},
+        {"text": "archive", "bbox": [305, 300, 425, 335]},
+        {"text": "supplement", "bbox": [435, 300, 590, 335]}
+      ]
+    }
+  ]
+}
