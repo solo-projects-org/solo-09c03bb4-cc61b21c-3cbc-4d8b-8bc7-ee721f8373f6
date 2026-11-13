@@ -60,6 +60,10 @@ Phrase search over OCR tokens, with per-word page and image-box locations.
 单版 OCR 重传会在一个 SQLite `BEGIN IMMEDIATE` 事务中替换该版 OCR，并只重建
 引用该版面的文章索引。搜索使用同一读快照，因此并发查询只会看到更正前或更正后的
 完整结果，不会看到半重建状态。
+
+空库首次装载同样使用一个 `BEGIN IMMEDIATE` 事务：整批版面 OCR、文章编目和文章
+索引一起提交；任何一条失败都会报错并回滚本批全部数据，改好样例后重启即可完整装入。
+多个进程并发启动时只有一个会装载，其余跳过。
 """
 
 

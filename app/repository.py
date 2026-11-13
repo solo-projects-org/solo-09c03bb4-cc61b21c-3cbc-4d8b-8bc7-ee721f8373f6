@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import unicodedata
@@ -92,6 +93,8 @@ CREATE INDEX IF NOT EXISTS idx_article_index_article_seq
 """
 
 MAX_PHRASE_TOKENS = 40
+
+logger = logging.getLogger(__name__)
 
 
 class DomainError(Exception):
@@ -355,57 +358,150 @@ def _rebuild_article(conn: sqlite3.Connection, article_id: str) -> int:
     return len(rows)
 
 
-def upsert_page_ocr(
-    db_path: str | os.PathLike[str],
+def _apply_page_ocr(
+    conn: sqlite3.Connection,
     page_id: str,
     payload: OCRPageInput,
+    updated_at: str,
 ) -> dict[str, Any]:
+    """Apply one complete page OCR inside the caller's transaction."""
     page_id = page_id.strip()
     if not page_id:
         raise DomainError(422, "invalid_page_id", "page_id must not be blank")
 
     blocks = payload.grouped_blocks()
     provided = {block_no for block_no, _ in blocks}
-    updated_at = utc_now()
 
+    required, affected = _get_page_refs(conn, page_id)
+    missing = sorted(required - provided)
+    if missing:
+        raise DomainError(
+            409,
+            "missing_catalog_blocks",
+            (
+                "OCR retransmission rejected: the page omits blocks that "
+                "catalog articles reference. No OCR or index change was "
+                "committed; the previous results remain queryable."
+            ),
+            page_id=page_id,
+            missing_blocks=missing,
+            affected_articles=affected,
+            unchanged=True,
+        )
+
+    revision, word_count = _replace_page_source(
+        conn, page_id, payload, blocks, updated_at
+    )
+
+    for article_id in affected:
+        _rebuild_article(conn, article_id)
+
+    return {
+        "page_id": page_id,
+        "revision": revision,
+        "updated_at": updated_at,
+        "blocks_count": len(blocks),
+        "words_count": word_count,
+        "affected_articles": affected,
+        "message": (
+            "Page OCR and all affected article indexes committed atomically."
+        ),
+    }
+
+
+def upsert_page_ocr(
+    db_path: str | os.PathLike[str],
+    page_id: str,
+    payload: OCRPageInput,
+) -> dict[str, Any]:
+    updated_at = utc_now()
     with _connection(db_path) as conn:
         with _write_transaction(conn):
-            required, affected = _get_page_refs(conn, page_id)
-            missing = sorted(required - provided)
-            if missing:
-                raise DomainError(
-                    409,
-                    "missing_catalog_blocks",
-                    (
-                        "OCR retransmission rejected: the page omits blocks that "
-                        "catalog articles reference. No OCR or index change was "
-                        "committed; the previous results remain queryable."
-                    ),
-                    page_id=page_id,
-                    missing_blocks=missing,
-                    affected_articles=affected,
-                    unchanged=True,
-                )
+            return _apply_page_ocr(conn, page_id, payload, updated_at)
 
-            revision, word_count = _replace_page_source(
-                conn, page_id, payload, blocks, updated_at
-            )
 
-            for article_id in affected:
-                _rebuild_article(conn, article_id)
+def _apply_catalog_article(
+    conn: sqlite3.Connection,
+    article_id: str,
+    payload: CatalogArticleInput,
+    updated_at: str,
+) -> dict[str, Any]:
+    """Create or replace one catalog entry inside the caller's transaction."""
+    article_id = article_id.strip()
+    if not article_id:
+        raise DomainError(422, "invalid_article_id", "article_id must not be blank")
 
-            return {
-                "page_id": page_id,
-                "revision": revision,
-                "updated_at": updated_at,
-                "blocks_count": len(blocks),
-                "words_count": word_count,
-                "affected_articles": affected,
-                "message": (
-                    "Page OCR and all affected article indexes committed "
-                    "atomically."
-                ),
-            }
+    old = conn.execute(
+        "SELECT revision FROM articles WHERE article_id = ?",
+        (article_id,),
+    ).fetchone()
+
+    missing = []
+    for ref in payload.blocks:
+        exists = conn.execute(
+            """
+            SELECT 1 FROM page_blocks
+            WHERE page_id = ? AND block_no = ?
+            """,
+            (ref.page_id, ref.block_no),
+        ).fetchone()
+        if not exists:
+            missing.append(f"{ref.page_id}/{ref.block_no}")
+
+    # A brand-new article may be cataloged before its OCR pages arrive;
+    # it stays unindexed until complete.  Replacing an existing article
+    # with missing OCR blocks is rejected so its old results are not
+    # silently discarded.
+    if missing and old:
+        raise DomainError(
+            409,
+            "missing_ocr_blocks",
+            (
+                "Catalog replacement rejected because referenced OCR "
+                "blocks are not present. The previous catalog and index "
+                "remain unchanged."
+            ),
+            article_id=article_id,
+            missing_blocks=missing,
+            unchanged=True,
+        )
+
+    revision = (int(old["revision"]) + 1) if old else 1
+
+    if old:
+        conn.execute(
+            """
+            UPDATE articles
+            SET title = ?, revision = ?, updated_at = ?
+            WHERE article_id = ?
+            """,
+            (payload.title, revision, updated_at, article_id),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO articles
+                (article_id, title, revision, updated_at, indexed_words)
+            VALUES (?, ?, ?, ?, 0)
+            """,
+            (article_id, payload.title, revision, updated_at),
+        )
+
+    conn.execute("DELETE FROM catalog_blocks WHERE article_id = ?", (article_id,))
+    conn.executemany(
+        """
+        INSERT INTO catalog_blocks
+            (article_id, seq, page_id, block_no)
+        VALUES (?, ?, ?, ?)
+        """,
+        [
+            (article_id, seq, ref.page_id, ref.block_no)
+            for seq, ref in enumerate(payload.blocks)
+        ],
+    )
+
+    _rebuild_article(conn, article_id)
+    return _article_info_from_conn(conn, article_id)
 
 
 def upsert_catalog_article(
@@ -413,86 +509,10 @@ def upsert_catalog_article(
     article_id: str,
     payload: CatalogArticleInput,
 ) -> dict[str, Any]:
-    article_id = article_id.strip()
-    if not article_id:
-        raise DomainError(422, "invalid_article_id", "article_id must not be blank")
-
     updated_at = utc_now()
     with _connection(db_path) as conn:
         with _write_transaction(conn):
-            old = conn.execute(
-                "SELECT revision FROM articles WHERE article_id = ?",
-                (article_id,),
-            ).fetchone()
-
-            missing = []
-            for ref in payload.blocks:
-                exists = conn.execute(
-                    """
-                    SELECT 1 FROM page_blocks
-                    WHERE page_id = ? AND block_no = ?
-                    """,
-                    (ref.page_id, ref.block_no),
-                ).fetchone()
-                if not exists:
-                    missing.append(f"{ref.page_id}/{ref.block_no}")
-
-            # A brand-new article may be cataloged before its OCR pages arrive;
-            # it stays unindexed until complete.  Replacing an existing article
-            # with missing OCR blocks is rejected so its old results are not
-            # silently discarded.
-            if missing and old:
-                raise DomainError(
-                    409,
-                    "missing_ocr_blocks",
-                    (
-                        "Catalog replacement rejected because referenced OCR "
-                        "blocks are not present. The previous catalog and index "
-                        "remain unchanged."
-                    ),
-                    article_id=article_id,
-                    missing_blocks=missing,
-                    unchanged=True,
-                )
-
-            revision = (int(old["revision"]) + 1) if old else 1
-
-            if old:
-                conn.execute(
-                    """
-                    UPDATE articles
-                    SET title = ?, revision = ?, updated_at = ?
-                    WHERE article_id = ?
-                    """,
-                    (payload.title, revision, updated_at, article_id),
-                )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO articles
-                        (article_id, title, revision, updated_at, indexed_words)
-                    VALUES (?, ?, ?, ?, 0)
-                    """,
-                    (article_id, payload.title, revision, updated_at),
-                )
-
-            conn.execute(
-                "DELETE FROM catalog_blocks WHERE article_id = ?", (article_id,)
-            )
-            conn.executemany(
-                """
-                INSERT INTO catalog_blocks
-                    (article_id, seq, page_id, block_no)
-                VALUES (?, ?, ?, ?)
-                """,
-                [
-                    (article_id, seq, ref.page_id, ref.block_no)
-                    for seq, ref in enumerate(payload.blocks)
-                ],
-            )
-
-            _rebuild_article(conn, article_id)
-            return _article_info_from_conn(conn, article_id)
+            return _apply_catalog_article(conn, article_id, payload, updated_at)
 
 
 def _page_info_from_conn(conn: sqlite3.Connection, page_id: str) -> dict[str, Any]:
@@ -784,22 +804,58 @@ def health_counts(db_path: str | os.PathLike[str]) -> dict[str, Any]:
 def seed_demo_if_empty(
     db_path: str | os.PathLike[str], sample_path: str | os.PathLike[str]
 ) -> bool:
-    """Load the bundled local sample once into an empty database."""
-    counts = health_counts(db_path)
-    if counts["pages"] or counts["articles"]:
-        return False
+    """Load the bundled local sample once into an empty database.
 
-    with open(sample_path, "r", encoding="utf-8") as handle:
-        sample = json.load(handle)
+    The whole sample (all page OCR, catalog entries and article indexes) is
+    validated and written inside a single ``BEGIN IMMEDIATE`` transaction.
+    If any part of the sample is invalid, nothing from this batch remains,
+    so fixing the file and restarting with the same data volume reloads it
+    completely.  ``BEGIN IMMEDIATE`` also serializes concurrent processes:
+    the first one seeds, later ones observe committed data and skip.
+    """
+    sample = Path(sample_path)
+    with open(sample, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
 
-    for page_data in sample.get("pages", []):
-        page_id = page_data["page_id"]
-        page_payload = OCRPageInput.model_validate(page_data)
-        upsert_page_ocr(db_path, page_id, page_payload)
+    page_payloads = [
+        (str(page_data["page_id"]), OCRPageInput.model_validate(page_data))
+        for page_data in data.get("pages", [])
+    ]
+    article_payloads = [
+        (
+            str(article_data["article_id"]),
+            CatalogArticleInput.model_validate(article_data),
+        )
+        for article_data in data.get("articles", [])
+    ]
 
-    for article_data in sample.get("articles", []):
-        article_id = article_data["article_id"]
-        article_payload = CatalogArticleInput.model_validate(article_data)
-        upsert_catalog_article(db_path, article_id, article_payload)
+    updated_at = utc_now()
+    with _connection(db_path) as conn:
+        with _write_transaction(conn):
+            existing = conn.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM pages) +
+                    (SELECT COUNT(*) FROM articles)
+                """
+            ).fetchone()[0]
+            if int(existing):
+                logger.info("Database already has data; skipping sample load")
+                return False
 
-    return True
+            # Pages first so catalog entries can index immediately against
+            # their OCR blocks.  All of this shares one transaction.
+            for page_id, page_payload in page_payloads:
+                _apply_page_ocr(conn, page_id, page_payload, updated_at)
+
+            for article_id, article_payload in article_payloads:
+                _apply_catalog_article(
+                    conn, article_id, article_payload, updated_at
+                )
+
+            logger.info(
+                "Loaded sample into empty database: %d pages, %d articles",
+                len(page_payloads),
+                len(article_payloads),
+            )
+            return True

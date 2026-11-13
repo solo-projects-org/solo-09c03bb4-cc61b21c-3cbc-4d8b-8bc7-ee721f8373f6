@@ -8,7 +8,7 @@
 docker compose up --build
 ```
 
-打开 **http://localhost:8000/docs**（Swagger UI）。服务启动时若数据库为空，会自动装入 `/app/samples/demo.json` 本地样例。
+打开 **http://localhost:8000/docs**（Swagger UI）。服务启动时若数据库为空，会把 `/app/samples/demo.json` 的**整批**版面 OCR、文章编目和文章索引装入同一个事务；中途任何一条出错都会让服务启动失败并回滚本批全部数据，数据库仍为空。改好文件、重建镜像并用**同一个数据卷**重启，就会完整装载。多个进程同时对一个空库启动时，只有一个进程真正装载，其余进程看到已提交的数据后跳过；所有版面和文章的初始 `revision` 都是 `1`。已有数据的库继续跳过首次装载。
 
 - SQLite 文件：`/data/archive.sqlite3`，保存在 Compose volume `archive-data`
 - 健康检查：`GET /health`
@@ -168,6 +168,11 @@ A-100 以 `dawn` 结束，A-200 以 `only` 开始，虽然二者同在 `page-002
 ## 一致性与事务设计
 
 - SQLite 开启 WAL 和外键。
+- **首次装载**：样例文件先在事务外整体解析和校验；随后在单个
+  `BEGIN IMMEDIATE` 事务内先检查数据库是否为空，再依次写入本批全部版面
+  OCR、编目和文章索引。任一步失败都会 `ROLLBACK`，库里不留本批数据。
+  `BEGIN IMMEDIATE` 也是跨进程装载锁：并发启动时只有一个进程看到空库并
+  提交，其余进程拿到写锁后看到已有数据并跳过。现有 API 和响应结构不变。
 - 单版 OCR 重传使用一个 `BEGIN IMMEDIATE` 事务：
   1. 读取该版被哪些文章引用；
   2. 若请求缺少其中任何块，立即回滚整版；
@@ -193,4 +198,5 @@ static/scans/
 tests/
   test_api.py      检索、更正、回滚、输入形式
   test_atomic.py   写事务暂停时的读快照验证
+  test_seed.py     首次装载整批回滚、修复后重启补齐、并发只装载一次
 ```
